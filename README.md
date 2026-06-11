@@ -17,8 +17,8 @@ SpiderSense is a Spider-Man inspired computer vision project built using Python,
 ## Installation
 
 ```bash
-git clone https://github.com/chirrupings123/spidersense.git
-cd spidersense
+git clone https://github.com/chirrupings123/SpiderSense.git
+cd SpiderSense
 python -m venv spidersense_env
 source spidersense_env/bin/activate
 pip install -r requirements.txt
