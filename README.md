@@ -74,6 +74,11 @@ pip install opencv-python mediapipe pyautogui numpy
 ```bash
 python spidersense.py
 ```
+or
+
+```bash
+python3 spidersense.py
+```
 
 - **First run:** SpiderSense enters calibration mode. Sweep your index finger to all four corners of the camera frame until the progress bar fills. This is saved automatically.
 - **Move cursor:** point with your index finger.
