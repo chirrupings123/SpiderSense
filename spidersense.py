@@ -6,6 +6,7 @@ import pyautogui
 import os
 import urllib.request
 import math
+import subprocess
 
 
 # ── CONFIG ─────────────────────────────────────────────────────
@@ -17,6 +18,12 @@ CAL_DURATION = 1200
 SMOOTHING = 0.4
 PINCH_THRESHOLD = 60
 CLICK_COOLDOWN = 20
+
+# Gesture settings
+THUMBS_UP_HOLD_FRAMES = 30      # ~1 second at 30fps
+APP_LAUNCH_COOLDOWN = 60        # frames to wait after launching before re-triggering
+SCROLL_SENSITIVITY = 800         # multiplier for scroll delta
+SCROLL_DEADZONE = 0.008          # ignore tiny jitter movements
 
 
 # ── SETUP HELPERS ────────────────────────────────────────────────
@@ -160,6 +167,51 @@ def handle_pinch_click(frame, pinch_dist, cooldown_counter):
     return cooldown_counter
 
 
+# ── GESTURE DETECTION ─────────────────────────────────────────
+
+def is_finger_extended(hand, tip_idx, pip_idx):
+    """Returns True if a finger is extended (tip above its PIP knuckle)."""
+    return hand[tip_idx].y < hand[pip_idx].y
+
+
+def is_thumbs_up(hand):
+    """
+    Detects a thumbs-up gesture:
+    - Thumb tip is well above the wrist
+    - Index, middle, ring, pinky are all curled
+    """
+    thumb_up = hand[4].y < hand[0].y - 0.1  # thumb tip clearly above wrist
+    index_curled = not is_finger_extended(hand, 8, 6)
+    middle_curled = not is_finger_extended(hand, 12, 10)
+    ring_curled = not is_finger_extended(hand, 16, 14)
+    pinky_curled = not is_finger_extended(hand, 20, 18)
+
+    return thumb_up and index_curled and middle_curled and ring_curled and pinky_curled
+
+
+def is_scroll_gesture(hand):
+    """
+    Detects two-finger scroll gesture:
+    - Index and middle fingers extended
+    - Ring and pinky curled
+    """
+    index_ext = is_finger_extended(hand, 8, 6)
+    middle_ext = is_finger_extended(hand, 12, 10)
+    ring_curled = not is_finger_extended(hand, 16, 14)
+    pinky_curled = not is_finger_extended(hand, 20, 18)
+
+    return index_ext and middle_ext and ring_curled and pinky_curled
+
+
+def open_app(app_name):
+    """Launches a macOS application by name."""
+    try:
+        subprocess.Popen(["open", "-a", app_name])
+        print(f"WEB-SHOOTER LAUNCH: {app_name}")
+    except Exception as e:
+        print(f"Failed to launch {app_name}: {e}")
+
+
 # ── HUD ────────────────────────────────────────────────────────────
 
 def draw_spider_logo(frame, x, y, size=30):
@@ -229,6 +281,11 @@ def main():
     prev_x, prev_y = screen_width // 2, screen_height // 2
     click_cooldown_counter = 0
 
+    # Gesture state
+    thumbs_up_counter = 0
+    app_launch_cooldown = 0
+    prev_scroll_y = None
+
     cal = load_calibration()
     if cal:
         calibrating = False
@@ -259,6 +316,10 @@ def main():
         frame_timestamp += 1
         results = hand_landmarker.detect_for_video(mp_image, frame_timestamp)
 
+        # Decrement app launch cooldown every frame regardless of hand presence
+        if app_launch_cooldown > 0:
+            app_launch_cooldown -= 1
+
         if results.hand_landmarks:
             for hand in results.hand_landmarks:
 
@@ -286,6 +347,49 @@ def main():
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 click_cooldown_counter = handle_pinch_click(frame, pinch_dist, click_cooldown_counter)
 
+                # ── GESTURE: THUMBS UP → OPEN SAFARI ──────────────
+                if is_thumbs_up(hand):
+                    thumbs_up_counter += 1
+                    progress = min(thumbs_up_counter, THUMBS_UP_HOLD_FRAMES)
+                    bar_width = int((progress / THUMBS_UP_HOLD_FRAMES) * 150)
+                    cv2.rectangle(frame, (10, 220), (10 + bar_width, 235), (0, 255, 255), -1)
+                    cv2.rectangle(frame, (10, 220), (160, 235), (255, 255, 255), 1)
+                    cv2.putText(frame, "THUMBS UP - HOLD TO LAUNCH",
+                        (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+                    if thumbs_up_counter >= THUMBS_UP_HOLD_FRAMES and app_launch_cooldown == 0:
+                        open_app("Safari")
+                        cv2.putText(frame, "WEBSHOOTER LAUNCH: SAFARI",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 3)
+                        app_launch_cooldown = APP_LAUNCH_COOLDOWN
+                        thumbs_up_counter = 0
+                else:
+                    thumbs_up_counter = 0
+
+                # ── GESTURE: TWO-FINGER SCROLL ────────────────────
+                if is_scroll_gesture(hand):
+                    middle_tip = hand[12]
+                    scroll_y = (tip.y + middle_tip.y) / 2  # average of index+middle y
+
+                    cv2.putText(frame, "SCROLL MODE",
+                        (10, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+                    if prev_scroll_y is not None:
+                        delta_y = scroll_y - prev_scroll_y
+
+                        if abs(delta_y) > SCROLL_DEADZONE:
+                            scroll_amount = int(-delta_y * SCROLL_SENSITIVITY)
+                            pyautogui.scroll(scroll_amount)
+
+                            direction = "UP" if scroll_amount > 0 else "DOWN"
+                            cv2.putText(frame, f"SCROLLING {direction}",
+                                (10, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+                    prev_scroll_y = scroll_y
+                else:
+                    prev_scroll_y = None
+
+                # ── CALIBRATION / CURSOR ──────────────────────────
                 if calibrating:
                     cal, cal_frames, calibrating_done = run_calibration_step(
                         frame, tip, cal, cal_frames, frame_width, frame_height
@@ -293,14 +397,19 @@ def main():
                     if calibrating_done:
                         calibrating = False
                 else:
-                    target_x, target_y = map_to_screen(tip, cal, screen_width, screen_height)
-                    smooth_x, smooth_y = smooth_position(prev_x, prev_y, target_x, target_y, SMOOTHING)
-                    pyautogui.moveTo(smooth_x, smooth_y, duration=0)
-                    prev_x, prev_y = smooth_x, smooth_y
+                    # Only move the cursor if NOT in scroll mode
+                    if not is_scroll_gesture(hand):
+                        target_x, target_y = map_to_screen(tip, cal, screen_width, screen_height)
+                        smooth_x, smooth_y = smooth_position(prev_x, prev_y, target_x, target_y, SMOOTHING)
+                        pyautogui.moveTo(smooth_x, smooth_y, duration=0)
+                        prev_x, prev_y = smooth_x, smooth_y
 
                     cv2.putText(frame, "SPIDER CURSOR ACTIVE",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     draw_hud_text(frame, get_hud_status_lines(pinch_dist))
+        else:
+            thumbs_up_counter = 0
+            prev_scroll_y = None
 
         # Spider logo always visible
         draw_spider_logo(frame, frame_width - 50, 50, size=30)
